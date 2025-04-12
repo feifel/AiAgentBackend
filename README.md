@@ -6,9 +6,13 @@ This AI Agent Backend is the backend to my AI Agent Frontend. You can talk and s
 - Python 3.12 or newer
 - pip (package installer for Python)
 - CUDA GPU with at least 12 GByte VRAM
-- PyTorch with CUDA
 - AI Agent Frontend (see other project)
 - huggingface.co account to download gemma-3 and Whisper
+- PyTorch with CUDA, see here [Start Locally | PyTorch](https://pytorch.org/get-started/locally/)
+    ```powershell
+        pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+    ```
+    This will download a 2.7 GByte file.
 
 ## Setup
 1. Clone the repository    
