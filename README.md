@@ -10,7 +10,7 @@ This AI Agent Backend is the backend to my AI Agent Frontend. You can talk and s
 - huggingface.co account to download gemma-3 and Whisper
 - PyTorch with CUDA, see here [Start Locally | PyTorch](https://pytorch.org/get-started/locally/)
     ```powershell
-        pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+    pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
     ```
     This will download a 2.7 GByte file.
 
@@ -71,3 +71,9 @@ This AI Agent Backend is the backend to my AI Agent Frontend. You can talk and s
 
 ## Credits
 This project was heavily inspired by https://github.com/yeyu2/Youtube_demos/tree/main/Multimodal-server-gemma3
+
+## Roadmap
+1. Use Ollama to run a gemma-3 version that supports German
+2. Replace Kokoro with "coqui-ai XTTS" that supports German
+3. Implement Talking Avatar using Wav2Lip
+4. Add MCP support for tooling
