@@ -37,9 +37,9 @@ This AI Agent Backend is the backend to my AI Agent Frontend. You can talk and s
     python main.py
     ```    
     The first time when you run this it will download the models:    
-    - model.safetensors: 1.62 GByte
-    - model-00001-of-00002.safetensors:  4.96 GByte
-    - model-00002-of-00002.safetensors:  3.03 GByte
+    - google--gemma-3-4b-it: 8.04 GByte
+    - openai--whisper-large-v3-turbo: 1.51 GByte
+    - hexgrad--Kokoro-82M: 0.31 GByte
     
     And you will see this error:     
     ```powershell
