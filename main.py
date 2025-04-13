@@ -12,9 +12,9 @@ from PIL import Image
 import time
 import os
 from datetime import datetime
-# Import Kokoro TTS library
-from kokoro import KPipeline
+from gtts import gTTS
 import re
+import librosa
 
 # Configure logging
 logging.basicConfig(
@@ -539,8 +539,8 @@ class GemmaMultimodalProcessor:
                 logger.error(f"Gemma generation error: {e}")
                 return f"Error processing: {text}"
 
-class KokoroTTSProcessor:
-    """Handles text-to-speech conversion using Kokoro model"""
+class GoogleTTSProcessor:
+    """Handles text-to-speech conversion using Google TTS (gTTS)"""
     _instance = None
     
     @classmethod
@@ -550,54 +550,68 @@ class KokoroTTSProcessor:
         return cls._instance
     
     def __init__(self):
-        logger.info("Initializing Kokoro TTS processor...")
-        try:
-            # Initialize Kokoro TTS pipeline with Chinese
-            self.pipeline = KPipeline(lang_code='a')
-            
-            # Set Chinese voice to xiaobei
-            self.default_voice = 'af_sarah'
-            
-            logger.info("Kokoro TTS processor initialized successfully")
-            # Counter
-            self.synthesis_count = 0
-        except Exception as e:
-            logger.error(f"Error initializing Kokoro TTS: {e}")
-            self.pipeline = None
+        logger.info("Initializing Google TTS processor...")
+        self.synthesis_count = 0
+        self.target_sr = 24000  # Target sample rate for better quality
+        logger.info("Google TTS processor initialized successfully")
     
+    def _mp3_to_wav(self, mp3_data):
+        """Convert MP3 data to WAV numpy array using librosa"""
+        try:
+            # Load MP3 data using librosa with original sample rate
+            y, sr = librosa.load(io.BytesIO(mp3_data), sr=None)  # Use None to keep original sample rate
+            
+            # Resample to target sample rate if needed
+            if sr != self.target_sr:
+                y = librosa.resample(y, orig_sr=sr, target_sr=self.target_sr)
+            
+            # Audio is already normalized by librosa to [-1, 1], just return it
+            return y
+            
+        except Exception as e:
+            logger.error(f"Error converting MP3 to WAV: {e}")
+            return None
+
+    def _generate_audio(self, text, lang='de'):
+        """Generate audio using Google TTS"""
+        try:
+            # Create an in-memory bytes buffer
+            mp3_fp = io.BytesIO()
+            
+            # Generate MP3 audio
+            tts = gTTS(text=text, lang=lang, slow=False)
+            tts.write_to_fp(mp3_fp)
+            mp3_fp.seek(0)
+            
+            # Convert MP3 to numpy array
+            audio_data = self._mp3_to_wav(mp3_fp.getvalue())
+            
+            if audio_data is not None:
+                return audio_data
+            return None
+                
+        except Exception as e:
+            logger.error(f"Audio generation error: {e}")
+            return None
+
     async def synthesize_initial_speech(self, text):
-        """Convert initial text to speech using Kokoro TTS with minimal splitting for speed"""
-        if not text or not self.pipeline:
+        """Convert initial text to speech using Google TTS"""
+        if not text:
             return None
         
         try:
             logger.info(f"Synthesizing initial speech for text: '{text}'")
             
             # Run TTS in a thread pool to avoid blocking
-            audio_segments = []
-            
-            # Use the executor to run the TTS pipeline with minimal splitting
-            # For initial text, we want to process it quickly with minimal splits
-            generator = await asyncio.get_event_loop().run_in_executor(
+            audio = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: self.pipeline(
-                    text, 
-                    voice=self.default_voice, 
-                    speed=1, 
-                    split_pattern=None  # No splitting for initial text to process faster
-                )
+                lambda: self._generate_audio(text, 'de')
             )
             
-            # Process all generated segments
-            for gs, ps, audio in generator:
-                audio_segments.append(audio)
-            
-            # Combine all audio segments
-            if audio_segments:
-                combined_audio = np.concatenate(audio_segments)
+            if audio is not None:
                 self.synthesis_count += 1
-                logger.info(f"Initial speech synthesis complete: {len(combined_audio)} samples")
-                return combined_audio
+                logger.info(f"Initial speech synthesis complete: {len(audio)} samples")
+                return audio
             return None
             
         except Exception as e:
@@ -605,31 +619,27 @@ class KokoroTTSProcessor:
             return None
     
     async def synthesize_remaining_speech(self, text):
-        """Convert remaining text to speech using Kokoro TTS with comprehensive splitting for quality"""
-        if not text or not self.pipeline:
+        """Convert remaining text to speech using Google TTS"""
+        if not text:
             return None
         
         try:
             logger.info(f"Synthesizing remaining speech for text: '{text[:50]}...' if len(text) > 50 else text")
             
-            # Run TTS in a thread pool to avoid blocking
+            # Split text into sentences for better processing
+            sentences = re.split(r'([.!?]+)', text)
             audio_segments = []
             
-            # Use the executor to run the TTS pipeline with comprehensive splitting
-            # For remaining text, we want to process it with proper splits for better quality
-            generator = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self.pipeline(
-                    text, 
-                    voice=self.default_voice, 
-                    speed=1, 
-                    split_pattern=r'[.!?。！？,，;；:]+'  # Comprehensive splitting for remaining text
-                )
-            )
-            
-            # Process all generated segments
-            for gs, ps, audio in generator:
-                audio_segments.append(audio)
+            for i in range(0, len(sentences)-1, 2):
+                sentence = sentences[i].strip() + (sentences[i+1] if i+1 < len(sentences) else "")
+                if sentence.strip():
+                    # Generate audio for each sentence
+                    audio = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: self._generate_audio(sentence, 'de')
+                    )
+                    if audio is not None:
+                        audio_segments.append(audio)
             
             # Combine all audio segments
             if audio_segments:
@@ -644,31 +654,27 @@ class KokoroTTSProcessor:
             return None
     
     async def synthesize_speech(self, text):
-        """Convert text to speech using Kokoro TTS (legacy method)"""
-        if not text or not self.pipeline:
+        """Convert text to speech using Google TTS (legacy method)"""
+        if not text:
             return None
         
         try:
             logger.info(f"Synthesizing speech for text: '{text[:50]}...' if len(text) > 50 else text")
             
-            # Run TTS in a thread pool to avoid blocking
+            # Split text into sentences for better processing
+            sentences = re.split(r'([.!?]+)', text)
             audio_segments = []
             
-            # Use the executor to run the TTS pipeline
-            # Updated split pattern to include Chinese punctuation marks
-            generator = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self.pipeline(
-                    text, 
-                    voice=self.default_voice, 
-                    speed=1, 
-                    split_pattern=r'[.!?。！？]+'  # Added Chinese punctuation marks
-                )
-            )
-            
-            # Process all generated segments
-            for gs, ps, audio in generator:
-                audio_segments.append(audio)
+            for i in range(0, len(sentences)-1, 2):
+                sentence = sentences[i].strip() + (sentences[i+1] if i+1 < len(sentences) else "")
+                if sentence.strip():
+                    # Generate audio for each sentence
+                    audio = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: self._generate_audio(sentence, 'de')
+                    )
+                    if audio is not None:
+                        audio_segments.append(audio)
             
             # Combine all audio segments
             if audio_segments:
@@ -693,7 +699,7 @@ async def handle_client(websocket):
         detector = AudioSegmentDetector()
         transcriber = WhisperTranscriber.get_instance()
         gemma_processor = GemmaMultimodalProcessor.get_instance()
-        tts_processor = KokoroTTSProcessor.get_instance()
+        tts_processor = GoogleTTSProcessor.get_instance()  # Updated to use Google TTS
         
         # Add keepalive task
         async def send_keepalive():
@@ -779,7 +785,8 @@ async def handle_client(websocket):
                                         
                                         if initial_audio is not None:
                                             # Convert to base64 and send to client
-                                            audio_bytes = (initial_audio * 32767).astype(np.int16).tobytes()
+                                            # Audio is already in [-1, 1] range from librosa
+                                            audio_bytes = (initial_audio * 32768).astype(np.int16).tobytes()
                                             base64_audio = base64.b64encode(audio_bytes).decode('utf-8')
                                             
                                             # Send the initial audio to the client
@@ -819,7 +826,8 @@ async def handle_client(websocket):
                                                         
                                                         if remaining_audio is not None:
                                                             # Convert to base64 and send to client
-                                                            audio_bytes = (remaining_audio * 32767).astype(np.int16).tobytes()
+                                                            # Audio is already in [-1, 1] range from librosa
+                                                            audio_bytes = (remaining_audio * 32768).astype(np.int16).tobytes()
                                                             base64_audio = base64.b64encode(audio_bytes).decode('utf-8')
                                                             
                                                             # Send the remaining audio to the client
@@ -924,7 +932,7 @@ async def main():
         # Initialize all processors ahead of time to load models
         transcriber = WhisperTranscriber.get_instance()
         gemma_processor = GemmaMultimodalProcessor.get_instance()
-        tts_processor = KokoroTTSProcessor.get_instance()
+        tts_processor = GoogleTTSProcessor.get_instance()
         
         logger.info("Starting WebSocket server on 0.0.0.0:9073")
         # Add ping_interval and ping_timeout parameters
