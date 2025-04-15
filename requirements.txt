@@ -8,3 +8,6 @@ accelerate
 bitsandbytes
 pydub
 ffmpeg-python
+httpx
+librosa
+transformers
