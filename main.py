@@ -29,7 +29,7 @@ class AudioSegmentDetector:
     """Detects speech segments based on audio energy levels"""
     
     def __init__(self, 
-                 sample_rate=16000,
+                 sample_rate=24000,  # Changed from 16000 to 24000
                  energy_threshold=0.015,
                  silence_duration=0.8,
                  min_speech_duration=0.8,
@@ -223,7 +223,7 @@ class WhisperTranscriber:
         # Counter
         self.transcription_count = 0
     
-    async def transcribe(self, audio_bytes, sample_rate=16000):
+    async def transcribe(self, audio_bytes, sample_rate=24000):
         """Transcribe audio bytes to text using the pipeline"""
         try:
             # Convert PCM bytes to numpy array
@@ -583,6 +583,7 @@ class GoogleTTSProcessor:
 
 async def handle_client(websocket):
     """Handles WebSocket client connection"""
+    detector = None  # Initialize to None to avoid UnboundLocalError
     try:
         # Receive initial configuration
         await websocket.recv()
@@ -825,7 +826,8 @@ async def handle_client(websocket):
         logger.error(f"Session error: {e}")
     finally:
         # Ensure TTS playing flag is cleared when connection ends
-        await detector.set_tts_playing(False)
+        if detector is not None:
+            await detector.set_tts_playing(False)
 
 async def main():
     """Main function to start the WebSocket server"""
