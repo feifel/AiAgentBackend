@@ -2,7 +2,12 @@ websockets
 torch
 numpy
 Pillow
-kokoro 
+gTTS
 soundfile
 accelerate
 bitsandbytes
+pydub
+ffmpeg-python
+httpx
+librosa
+transformers

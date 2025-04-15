@@ -3,7 +3,7 @@ import json
 import websockets
 import base64
 import torch
-from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline, AutoProcessor, Gemma3ForConditionalGeneration
+from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 import numpy as np
 import logging
 import sys
@@ -12,9 +12,10 @@ from PIL import Image
 import time
 import os
 from datetime import datetime
-# Import Kokoro TTS library
-from kokoro import KPipeline
+from gtts import gTTS
 import re
+import librosa
+import httpx
 
 # Configure logging
 logging.basicConfig(
@@ -239,7 +240,7 @@ class WhisperTranscriber:
                     {"array": audio_array, "sampling_rate": sample_rate},
                     generate_kwargs={
                         "task": "transcribe",
-                        "language": "english",
+                        "language": "german",  # Changed from "english" to "german"
                         "temperature": 0.0
                     }
                 )
@@ -257,8 +258,8 @@ class WhisperTranscriber:
             logger.error(f"Transcription error: {e}")
             return ""
 
-class GemmaMultimodalProcessor:
-    """Handles multimodal generation using Gemma 3 model"""
+class Gemma3Processor:
+    """Handles text generation using Gemma3 model via Ollama"""
     _instance = None
     
     @classmethod
@@ -268,279 +269,171 @@ class GemmaMultimodalProcessor:
         return cls._instance
     
     def __init__(self):
-        # Use GPU for generation
-        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        logger.info(f"Using device for Gemma: {self.device}")
+        logger.info("Initializing Gemma3 processor...")
         
-        # Load model and processor
-        model_id = "google/gemma-3-4b-it"
-        logger.info(f"Loading {model_id}...")
-        
-        # Load model with 8-bit quantization for memory efficiency
-        self.model = Gemma3ForConditionalGeneration.from_pretrained(
-            model_id,
-            device_map="auto",
-            load_in_8bit=True,  # Enable 8-bit quantization
-            torch_dtype=torch.bfloat16
-        )
-        
-        # Load processor
-        self.processor = AutoProcessor.from_pretrained(model_id)
-        
-        logger.info("Gemma model ready for multimodal generation")
+        # Message history management
+        self.message_history = []
+        self.max_history_messages = 4  # Keep last 4 exchanges
         
         # Cache for most recent image
         self.last_image = None
         self.last_image_timestamp = 0
         self.lock = asyncio.Lock()
         
-        # Message history management
-        self.message_history = []
-        self.max_history_messages = 4  # Keep last 4 exchanges (2 user, 2 assistant)
+        # Ollama API endpoint
+        self.ollama_api = "http://localhost:11434/api/generate"
         
         # Counter
         self.generation_count = 0
+        
+        logger.info("Gemma3 processor initialized")
     
     async def set_image(self, image_data):
         """Cache the most recent image received"""
         async with self.lock:
             try:
-                # Convert image data to PIL Image
-                image = Image.open(io.BytesIO(image_data))
-                
-                # Resize to 75% of original size
-                new_size = (int(image.size[0] * 0.75), int(image.size[1] * 0.75))
-                image = image.resize(new_size, Image.Resampling.LANCZOS)
-                
-                # Clear message history when new image is set
-                self.message_history = []
-                self.last_image = image
+                # Always ensure data URL prefix
+                if image_data.startswith('data:image/'):
+                    self.last_image = image_data
+                else:
+                    self.last_image = f"data:image/jpeg;base64,{image_data}"
                 self.last_image_timestamp = time.time()
+                self.message_history = []
+                logger.info(f"Image cached, length: {len(self.last_image)}")
                 return True
             except Exception as e:
-                logger.error(f"Error processing image: {e}")
+                logger.error(f"Error caching image: {e}")
                 return False
-    
-    def _build_messages(self, text):
-        """Build messages array with history for the model"""
-        messages = [
-            {
-                "role": "system",
-                "content": [{"type": "text", "text": """You are a helpful assistant providing spoken 
-                responses about images and engaging in natural conversation. Keep your responses concise, 
-                fluent, and conversational. Use natural oral language that's easy to listen to.
 
-                When responding:
-                1. If the user's question or comment is clearly about the image, provide a relevant,
-                   focused response about what you see.
-                2. If the user's input is not clearly related to the image or lacks context:
-                   - Don't force image descriptions into your response
-                   - Respond naturally as in a normal conversation
-                   - If needed, politely ask for clarification (e.g., "Could you please be more specific 
-                     about what you'd like to know about the image?")
-                3. Keep responses concise:
-                   - Aim for 2-3 short sentences
-                   - Focus on the most relevant information
-                   - Use conversational language
-                
-                Maintain conversation context and refer to previous exchanges naturally when relevant.
-                If the user's request is unclear, ask them to repeat or clarify in a friendly way."""}]
-            }
-        ]
+    def _build_prompt(self, text):
+        """Build messages with history for the model"""
+        # Format system prompt
+        system_prompt = """Du bist ein hilfreicher Assistent, der gesprochene Antworten über Bilder gibt und natürliche Gespräche führt. Halte deine Antworten prägnant, flüssig und gesprächig. Verwende natürliche gesprochene Sprache, die leicht anzuhören ist.
+
+Wenn sich die Frage auf ein Bild bezieht, beschreibe bitte genau was du im Bild siehst. Konzentriere dich auf die wichtigsten Details."""
+
+        # Build conversation without system prompt first
+        conversation = ""
         
         # Add conversation history
-        messages.extend(self.message_history)
+        for msg in self.message_history[-4:]:  # Only keep last 4 messages
+            role_prefix = "Benutzer: " if msg["role"] == "user" else "Assistent: "
+            conversation += role_prefix + msg["content"] + "\n"
         
-        # Add current user message with image
-        messages.append({
-            "role": "user",
-            "content": [
-                {"type": "image", "image": self.last_image},
-                {"type": "text", "text": text}
-            ]
-        })
+        # Add current message
+        conversation += f"Benutzer: {text}\nAssistent:"
+
+        # Combine with the system prompt at the beginning
+        final_prompt = f"{system_prompt}\n\n{conversation}"
         
-        return messages
-    
-    def _update_history(self, user_text, assistant_response):
-        """Update message history with new exchange"""
-        # Add user message
-        self.message_history.append({
-            "role": "user",
-            "content": [{"type": "text", "text": user_text}]
-        })
-        
-        # Add assistant response
-        self.message_history.append({
-            "role": "assistant",
-            "content": [{"type": "text", "text": assistant_response}]
-        })
-        
-        # Trim history to keep only recent messages
-        if len(self.message_history) > self.max_history_messages:
-            self.message_history = self.message_history[-self.max_history_messages:]
-                
+        return final_prompt
+
+    async def _generate_with_ollama(self, prompt):
+        """Generate text using Ollama API"""
+        try:
+            payload = {
+                "model": "gemma3:latest",
+                "prompt": prompt,
+                "stream": True
+            }
+            if self.last_image:
+                img = self.last_image
+                # If it starts with data URL, extract only the base64 part
+                if img.startswith('data:'):
+                    img = img.split(',', 1)[1]
+                payload["images"] = [img]
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    self.ollama_api,
+                    json=payload,
+                    timeout=30.0
+                )
+                if response.status_code != 200:
+                    logger.error(f"Ollama API error: {response.status_code} - {response.text}")
+                return response
+        except Exception as e:
+            logger.error(f"Ollama API error: {e}")
+            return None
+
     async def generate_streaming(self, text, initial_chunks=3):
-        """Generate a response using the latest image and text input with streaming for initial chunks"""
+        """Generate a response using Gemma3 with streaming"""
         async with self.lock:
             try:
-                if not self.last_image:
-                    logger.warning("No image available for multimodal generation")
-                    return None, f"No image context: {text}"
-                
                 # Build messages with history
-                messages = self._build_messages(text)
+                messages = self._build_prompt(text)
                 
-                # Prepare inputs for the model
-                inputs = self.processor.apply_chat_template(
-                    messages, 
-                    add_generation_prompt=True,
-                    tokenize=True,
-                    return_dict=True,
-                    return_tensors="pt"
-                ).to(self.model.device)
+                # Get streaming response from Ollama
+                response = await self._generate_with_ollama(messages)
                 
-                input_len = inputs["input_ids"].shape[-1]
-                
-                # Create a streamer for token-by-token generation
-                from transformers import TextIteratorStreamer
-                from threading import Thread
-                
-                streamer = TextIteratorStreamer(
-                    self.processor.tokenizer,
-                    skip_special_tokens=True,
-                    skip_prompt=True
-                )
-                
-                # Start generation in a separate thread
-                generation_kwargs = dict(
-                    **inputs,
-                    max_new_tokens=128,
-                    do_sample=True,
-                    temperature=0.7,
-                    use_cache=True,
-                    streamer=streamer,
-                )
-                
-                thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
-                thread.start()
-                
-                # Collect initial text until we have a complete sentence or enough content
-                initial_text = ""
-                min_chars = 50  # Minimum characters to collect for initial chunk
-                sentence_end_pattern = re.compile(r'[.!?]')
-                has_sentence_end = False
-                
-                # Collect the first sentence or minimum character count
-                for chunk in streamer:
-                    initial_text += chunk
+                if response:
+                    # Initialize response text
+                    initial_text = ""
+                    min_chars = 50
+                    sentence_end_pattern = re.compile(r'[.!?]')
+                    has_sentence_end = False
                     
-                    # Check if we have a sentence end
-                    if sentence_end_pattern.search(chunk):
-                        has_sentence_end = True
-                        # If we have at least some content, break after sentence end
-                        if len(initial_text) >= min_chars / 2:
-                            break
+                    async for line in response.aiter_lines():
+                        if line:
+                            try:
+                                data = json.loads(line)
+                                if "response" in data:
+                                    chunk = data["response"]
+                                    initial_text += chunk
+                                    
+                                    # Check for sentence end
+                                    if sentence_end_pattern.search(chunk):
+                                        has_sentence_end = True
+                                        if len(initial_text) >= min_chars / 2:
+                                            break
+                                    
+                                    # If we have enough content, break
+                                    if len(initial_text) >= min_chars and (has_sentence_end or "," in initial_text):
+                                        break
+                                    
+                                    # Safety check
+                                    if len(initial_text) >= min_chars * 2:
+                                        break
+                                        
+                                if data.get("done", False):
+                                    break
+                            except json.JSONDecodeError:
+                                continue
                     
-                    # If we have enough content, break
-                    if len(initial_text) >= min_chars and (has_sentence_end or "," in initial_text):
-                        break
+                    self.generation_count += 1
+                    logger.info(f"Gemma3 initial generation: '{initial_text}' ({len(initial_text)} chars)")
                     
-                    # Safety check - if we've collected a lot of text without sentence end
-                    if len(initial_text) >= min_chars * 2:
-                        break
-                
-                # Return initial text and the streamer for continued generation
-                self.generation_count += 1
-                logger.info(f"Gemma initial generation: '{initial_text}' ({len(initial_text)} chars)")
-                
-                # Don't update history yet - wait for complete response
-                # Store user message for later
-                self.pending_user_message = text
-                self.pending_response = initial_text
-                
-                return streamer, initial_text
+                    # Store for history update
+                    self.pending_user_message = text
+                    self.pending_response = initial_text
+                    
+                    return response, initial_text
+                    
+                return None, "Error generating response"
                 
             except Exception as e:
-                logger.error(f"Gemma streaming generation error: {e}")
+                logger.error(f"Gemma3 streaming generation error: {e}")
                 return None, f"Error processing: {text}"
 
     def _update_history_with_complete_response(self, user_text, initial_response, remaining_text=None):
-        """Update message history with complete response, including any remaining text"""
-        # Combine initial and remaining text if available
+        """Update message history with complete response"""
         complete_response = initial_response
         if remaining_text:
             complete_response = initial_response + remaining_text
         
-        # Add user message
-        self.message_history.append({
-            "role": "user",
-            "content": [{"type": "text", "text": user_text}]
-        })
+        # Add exchange to history
+        self.message_history.extend([
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": complete_response}
+        ])
         
-        # Add complete assistant response
-        self.message_history.append({
-            "role": "assistant",
-            "content": [{"type": "text", "text": complete_response}]
-        })
-        
-        # Trim history to keep only recent messages
+        # Trim history
         if len(self.message_history) > self.max_history_messages:
             self.message_history = self.message_history[-self.max_history_messages:]
         
         logger.info(f"Updated message history with complete response ({len(complete_response)} chars)")
 
-    async def generate(self, text):
-        """Generate a response using the latest image and text input (non-streaming)"""
-        async with self.lock:
-            try:
-                if not self.last_image:
-                    logger.warning("No image available for multimodal generation")
-                    return f"No image context: {text}"
-                
-                # Build messages with history
-                messages = self._build_messages(text)
-                
-                # Prepare inputs for the model
-                inputs = self.processor.apply_chat_template(
-                    messages, 
-                    add_generation_prompt=True,
-                    tokenize=True,
-                    return_dict=True,
-                    return_tensors="pt"
-                ).to(self.model.device)
-                
-                input_len = inputs["input_ids"].shape[-1]
-                
-                # Generate response with parameters tuned for concise output
-                generation = self.model.generate(
-                    **inputs, 
-                    max_new_tokens=128,
-                    do_sample=True,
-                    temperature=0.7,
-                    use_cache=True,
-                )
-                
-                # Decode the generated tokens
-                generated_text = self.processor.decode(
-                    generation[0][input_len:],
-                    skip_special_tokens=True
-                )
-                
-                # Update conversation history
-                self._update_history(text, generated_text)
-                
-                self.generation_count += 1
-                logger.info(f"Gemma generation result ({len(generated_text)} chars)")
-                
-                return generated_text
-                
-            except Exception as e:
-                logger.error(f"Gemma generation error: {e}")
-                return f"Error processing: {text}"
-
-class KokoroTTSProcessor:
-    """Handles text-to-speech conversion using Kokoro model"""
+class GoogleTTSProcessor:
+    """Handles text-to-speech conversion using Google TTS (gTTS)"""
     _instance = None
     
     @classmethod
@@ -550,54 +443,68 @@ class KokoroTTSProcessor:
         return cls._instance
     
     def __init__(self):
-        logger.info("Initializing Kokoro TTS processor...")
-        try:
-            # Initialize Kokoro TTS pipeline with Chinese
-            self.pipeline = KPipeline(lang_code='a')
-            
-            # Set Chinese voice to xiaobei
-            self.default_voice = 'af_sarah'
-            
-            logger.info("Kokoro TTS processor initialized successfully")
-            # Counter
-            self.synthesis_count = 0
-        except Exception as e:
-            logger.error(f"Error initializing Kokoro TTS: {e}")
-            self.pipeline = None
+        logger.info("Initializing Google TTS processor...")
+        self.synthesis_count = 0
+        self.target_sr = 24000  # Target sample rate for better quality
+        logger.info("Google TTS processor initialized successfully")
     
+    def _mp3_to_wav(self, mp3_data):
+        """Convert MP3 data to WAV numpy array using librosa"""
+        try:
+            # Load MP3 data using librosa with original sample rate
+            y, sr = librosa.load(io.BytesIO(mp3_data), sr=None)  # Use None to keep original sample rate
+            
+            # Resample to target sample rate if needed
+            if sr != self.target_sr:
+                y = librosa.resample(y, orig_sr=sr, target_sr=self.target_sr)
+            
+            # Audio is already normalized by librosa to [-1, 1], just return it
+            return y
+            
+        except Exception as e:
+            logger.error(f"Error converting MP3 to WAV: {e}")
+            return None
+
+    def _generate_audio(self, text, lang='de'):
+        """Generate audio using Google TTS"""
+        try:
+            # Create an in-memory bytes buffer
+            mp3_fp = io.BytesIO()
+            
+            # Generate MP3 audio
+            tts = gTTS(text=text, lang=lang, slow=False)
+            tts.write_to_fp(mp3_fp)
+            mp3_fp.seek(0)
+            
+            # Convert MP3 to numpy array
+            audio_data = self._mp3_to_wav(mp3_fp.getvalue())
+            
+            if audio_data is not None:
+                return audio_data
+            return None
+                
+        except Exception as e:
+            logger.error(f"Audio generation error: {e}")
+            return None
+
     async def synthesize_initial_speech(self, text):
-        """Convert initial text to speech using Kokoro TTS with minimal splitting for speed"""
-        if not text or not self.pipeline:
+        """Convert initial text to speech using Google TTS"""
+        if not text:
             return None
         
         try:
             logger.info(f"Synthesizing initial speech for text: '{text}'")
             
             # Run TTS in a thread pool to avoid blocking
-            audio_segments = []
-            
-            # Use the executor to run the TTS pipeline with minimal splitting
-            # For initial text, we want to process it quickly with minimal splits
-            generator = await asyncio.get_event_loop().run_in_executor(
+            audio = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: self.pipeline(
-                    text, 
-                    voice=self.default_voice, 
-                    speed=1, 
-                    split_pattern=None  # No splitting for initial text to process faster
-                )
+                lambda: self._generate_audio(text, 'de')
             )
             
-            # Process all generated segments
-            for gs, ps, audio in generator:
-                audio_segments.append(audio)
-            
-            # Combine all audio segments
-            if audio_segments:
-                combined_audio = np.concatenate(audio_segments)
+            if audio is not None:
                 self.synthesis_count += 1
-                logger.info(f"Initial speech synthesis complete: {len(combined_audio)} samples")
-                return combined_audio
+                logger.info(f"Initial speech synthesis complete: {len(audio)} samples")
+                return audio
             return None
             
         except Exception as e:
@@ -605,31 +512,27 @@ class KokoroTTSProcessor:
             return None
     
     async def synthesize_remaining_speech(self, text):
-        """Convert remaining text to speech using Kokoro TTS with comprehensive splitting for quality"""
-        if not text or not self.pipeline:
+        """Convert remaining text to speech using Google TTS"""
+        if not text:
             return None
         
         try:
             logger.info(f"Synthesizing remaining speech for text: '{text[:50]}...' if len(text) > 50 else text")
             
-            # Run TTS in a thread pool to avoid blocking
+            # Split text into sentences for better processing
+            sentences = re.split(r'([.!?]+)', text)
             audio_segments = []
             
-            # Use the executor to run the TTS pipeline with comprehensive splitting
-            # For remaining text, we want to process it with proper splits for better quality
-            generator = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self.pipeline(
-                    text, 
-                    voice=self.default_voice, 
-                    speed=1, 
-                    split_pattern=r'[.!?。！？,，;；:]+'  # Comprehensive splitting for remaining text
-                )
-            )
-            
-            # Process all generated segments
-            for gs, ps, audio in generator:
-                audio_segments.append(audio)
+            for i in range(0, len(sentences)-1, 2):
+                sentence = sentences[i].strip() + (sentences[i+1] if i+1 < len(sentences) else "")
+                if sentence.strip():
+                    # Generate audio for each sentence
+                    audio = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: self._generate_audio(sentence, 'de')
+                    )
+                    if audio is not None:
+                        audio_segments.append(audio)
             
             # Combine all audio segments
             if audio_segments:
@@ -644,31 +547,27 @@ class KokoroTTSProcessor:
             return None
     
     async def synthesize_speech(self, text):
-        """Convert text to speech using Kokoro TTS (legacy method)"""
-        if not text or not self.pipeline:
+        """Convert text to speech using Google TTS (legacy method)"""
+        if not text:
             return None
         
         try:
             logger.info(f"Synthesizing speech for text: '{text[:50]}...' if len(text) > 50 else text")
             
-            # Run TTS in a thread pool to avoid blocking
+            # Split text into sentences for better processing
+            sentences = re.split(r'([.!?]+)', text)
             audio_segments = []
             
-            # Use the executor to run the TTS pipeline
-            # Updated split pattern to include Chinese punctuation marks
-            generator = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self.pipeline(
-                    text, 
-                    voice=self.default_voice, 
-                    speed=1, 
-                    split_pattern=r'[.!?。！？]+'  # Added Chinese punctuation marks
-                )
-            )
-            
-            # Process all generated segments
-            for gs, ps, audio in generator:
-                audio_segments.append(audio)
+            for i in range(0, len(sentences)-1, 2):
+                sentence = sentences[i].strip() + (sentences[i+1] if i+1 < len(sentences) else "")
+                if sentence.strip():
+                    # Generate audio for each sentence
+                    audio = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: self._generate_audio(sentence, 'de')
+                    )
+                    if audio is not None:
+                        audio_segments.append(audio)
             
             # Combine all audio segments
             if audio_segments:
@@ -692,8 +591,8 @@ async def handle_client(websocket):
         # Initialize speech detection and get instance of processors
         detector = AudioSegmentDetector()
         transcriber = WhisperTranscriber.get_instance()
-        gemma_processor = GemmaMultimodalProcessor.get_instance()
-        tts_processor = KokoroTTSProcessor.get_instance()
+        gemma3_processor = Gemma3Processor.get_instance()  # Updated to use Gemma3
+        tts_processor = GoogleTTSProcessor.get_instance()  # Updated to use Google TTS
         
         # Add keepalive task
         async def send_keepalive():
@@ -751,7 +650,7 @@ async def handle_client(websocket):
                             try:
                                 # Create generation task
                                 generation_task = asyncio.create_task(
-                                    gemma_processor.generate_streaming(transcription, initial_chunks=3)
+                                    gemma3_processor.generate_streaming(transcription, initial_chunks=3)
                                 )
                                 
                                 # Store the generation task
@@ -779,7 +678,8 @@ async def handle_client(websocket):
                                         
                                         if initial_audio is not None:
                                             # Convert to base64 and send to client
-                                            audio_bytes = (initial_audio * 32767).astype(np.int16).tobytes()
+                                            # Audio is already in [-1, 1] range from librosa
+                                            audio_bytes = (initial_audio * 32768).astype(np.int16).tobytes()
                                             base64_audio = base64.b64encode(audio_bytes).decode('utf-8')
                                             
                                             # Send the initial audio to the client
@@ -787,9 +687,9 @@ async def handle_client(websocket):
                                                 "audio": base64_audio
                                             }))
                                             
-                                            # Start collecting remaining text in parallel
+                                            # Now start collecting remaining text in parallel
                                             remaining_text_task = asyncio.create_task(
-                                                collect_remaining_text(streamer)
+                                                collect_remaining_text(streamer, initial_text)
                                             )
                                             
                                             # Store the remaining text task
@@ -800,7 +700,7 @@ async def handle_client(websocket):
                                                 remaining_text = await remaining_text_task
                                                 
                                                 # Update message history with complete response
-                                                gemma_processor._update_history_with_complete_response(
+                                                gemma3_processor._update_history_with_complete_response(
                                                     transcription, initial_text, remaining_text
                                                 )
                                                 
@@ -819,7 +719,8 @@ async def handle_client(websocket):
                                                         
                                                         if remaining_audio is not None:
                                                             # Convert to base64 and send to client
-                                                            audio_bytes = (remaining_audio * 32767).astype(np.int16).tobytes()
+                                                            # Audio is already in [-1, 1] range from librosa
+                                                            audio_bytes = (remaining_audio * 32768).astype(np.int16).tobytes()
                                                             base64_audio = base64.b64encode(audio_bytes).decode('utf-8')
                                                             
                                                             # Send the remaining audio to the client
@@ -834,7 +735,7 @@ async def handle_client(websocket):
                                             
                                             except asyncio.CancelledError:
                                                 # If text collection is cancelled, update history with what we have
-                                                gemma_processor._update_history_with_complete_response(
+                                                gemma3_processor._update_history_with_complete_response(
                                                     transcription, initial_text
                                                 )
                                                 logger.info("Remaining text collection cancelled - new speech detected")
@@ -842,7 +743,7 @@ async def handle_client(websocket):
                                     
                                     except asyncio.CancelledError:
                                         # If initial TTS is cancelled, still update history
-                                        gemma_processor._update_history_with_complete_response(
+                                        gemma3_processor._update_history_with_complete_response(
                                             transcription, initial_text
                                         )
                                         logger.info("Initial TTS cancelled - new speech detected")
@@ -865,18 +766,21 @@ async def handle_client(websocket):
                     await detector.set_tts_playing(False)
                     await detector.set_current_tasks()
         
-        async def collect_remaining_text(streamer):
+        async def collect_remaining_text(streamer, initial_text):
             """Collect remaining text from the streamer"""
             collected_text = ""
             
             if streamer:
                 try:
-                    for chunk in streamer:
-                        collected_text += chunk
+                    async for line in streamer.aiter_lines():
+                        data = json.loads(line)
+                        if "response" in data:
+                            chunk = data["response"]
+                            collected_text += chunk
                 except asyncio.CancelledError:
                     raise
-                
-            return collected_text
+            # remove the initial_text from the remaining text
+            return collected_text[len(initial_text):]
         
         async def receive_audio_and_images():
             async for message in websocket:
@@ -890,17 +794,22 @@ async def handle_client(websocket):
                                 audio_data = base64.b64decode(chunk["data"])
                                 await detector.add_audio(audio_data)
                             # Only process image if TTS is not playing
-                            elif chunk["mime_type"] == "image/jpeg" and not detector.tts_playing:
-                                image_data = base64.b64decode(chunk["data"])
-                                await gemma_processor.set_image(image_data)
+                            elif chunk["mime_type"].startswith("image/") and not detector.tts_playing:
+                                # Pass the image data through exactly as received
+                                await gemma3_processor.set_image(chunk["data"])
                     
                     # Only process standalone image if TTS is not playing
                     if "image" in data and not detector.tts_playing:
-                        image_data = base64.b64decode(data["image"])
-                        await gemma_processor.set_image(image_data)
+                        # Pass the image data through exactly as received
+                        await gemma3_processor.set_image(data["image"])
                         
                 except Exception as e:
                     logger.error(f"Error receiving data: {e}")
+                    if 'data' in locals():
+                        logger.error(f"Message type: {type(data)}")
+                        if isinstance(data, dict):
+                            logger.error(f"Keys in message: {list(data.keys())}")
+                    raise
         
         # Run tasks concurrently
         await asyncio.gather(
@@ -923,8 +832,8 @@ async def main():
     try:
         # Initialize all processors ahead of time to load models
         transcriber = WhisperTranscriber.get_instance()
-        gemma_processor = GemmaMultimodalProcessor.get_instance()
-        tts_processor = KokoroTTSProcessor.get_instance()
+        gemma3_processor = Gemma3Processor.get_instance()  # Updated to use Gemma3
+        tts_processor = GoogleTTSProcessor.get_instance()
         
         logger.info("Starting WebSocket server on 0.0.0.0:9073")
         # Add ping_interval and ping_timeout parameters
