@@ -299,7 +299,6 @@ class Gemma3Processor:
                     self.last_image = f"data:image/jpeg;base64,{image_data}"
                 self.last_image_timestamp = time.time()
                 self.message_history = []
-                logger.info(f"Image cached, length: {len(self.last_image)}")
                 return True
             except Exception as e:
                 logger.error(f"Error caching image: {e}")
@@ -641,9 +640,20 @@ async def handle_client(websocket):
                             
                             # Send interrupt signal before starting new generation
                             logger.info("Sending interrupt signal for new speech detection")
-                            interrupt_message = json.dumps({"interrupt": True})
+                            interrupt_message = json.dumps({
+                                "sender": "ai",
+                                "mime_type": "application/interrupt",
+                                "data": True
+                            })
                             logger.info(f"Interrupt message: {interrupt_message}")
                             await websocket.send(interrupt_message)
+                            
+                            # send transcribed user message
+                            await websocket.send(json.dumps({
+                                "sender": "user",
+                                "mime_type": "text/plain",
+                                "data": transcription
+                            }))
                             
                             # Set TTS playing flag and start new generation workflow
                             await detector.set_tts_playing(True)
@@ -685,9 +695,11 @@ async def handle_client(websocket):
                                             
                                             # Send the initial audio to the client
                                             await websocket.send(json.dumps({
-                                                "audio": base64_audio
+                                                "sender": "ai",
+                                                "mime_type": "audio/pcm",
+                                                "data": base64_audio
                                             }))
-                                            
+                                            aiResponse = initial_text
                                             # Now start collecting remaining text in parallel
                                             remaining_text_task = asyncio.create_task(
                                                 collect_remaining_text(streamer, initial_text)
@@ -726,14 +738,24 @@ async def handle_client(websocket):
                                                             
                                                             # Send the remaining audio to the client
                                                             await websocket.send(json.dumps({
-                                                                "audio": base64_audio
+                                                                "sender": "ai",
+                                                                "mime_type": "audio/pcm",
+                                                                "data": base64_audio
                                                             }))
+                                                            
+                                                            aiResponse = f"{initial_text} {remaining_text}"
+                                                            
                                                     
                                                     except asyncio.CancelledError:
                                                         # Even if TTS is cancelled, keep the message history
                                                         logger.info("Remaining TTS cancelled - new speech detected")
                                                         continue
-                                            
+
+                                                await websocket.send(json.dumps({
+                                                    "sender": "ai",
+                                                    "mime_type": "text/plain",
+                                                    "data": aiResponse
+                                                }))
                                             except asyncio.CancelledError:
                                                 # If text collection is cancelled, update history with what we have
                                                 gemma3_processor._update_history_with_complete_response(
@@ -783,26 +805,21 @@ async def handle_client(websocket):
             # remove the initial_text from the remaining text
             return collected_text[len(initial_text):]
         
-        async def receive_audio_and_images():
+        async def receive_user_input():
             async for message in websocket:
                 try:
                     data = json.loads(message)
-                    
-                    # Handle audio data
-                    if "realtime_input" in data:
-                        for chunk in data["realtime_input"]["media_chunks"]:
-                            if chunk["mime_type"] == "audio/pcm":
-                                audio_data = base64.b64decode(chunk["data"])
-                                await detector.add_audio(audio_data)
-                            # Only process image if TTS is not playing
-                            elif chunk["mime_type"].startswith("image/") and not detector.tts_playing:
-                                # Pass the image data through exactly as received
-                                await gemma3_processor.set_image(chunk["data"])
-                    
-                    # Only process standalone image if TTS is not playing
-                    if "image" in data and not detector.tts_playing:
-                        # Pass the image data through exactly as received
-                        await gemma3_processor.set_image(data["image"])
+                                        
+                    if "mime_type" in data:
+                        # logger.info(f"receive_user_input: {data["mime_type"]}")
+                        # Handle audio data
+                        if data["mime_type"] == "audio/pcm":
+                            audio_data = base64.b64decode(data["data"])
+                            await detector.add_audio(audio_data)
+                        # Only process image if TTS is not playing
+                        elif data["mime_type"] == "image/jpeg" and not detector.tts_playing:
+                            # Pass the image data through exactly as received
+                            await gemma3_processor.set_image(data["data"])
                         
                 except Exception as e:
                     logger.error(f"Error receiving data: {e}")
@@ -814,7 +831,7 @@ async def handle_client(websocket):
         
         # Run tasks concurrently
         await asyncio.gather(
-            receive_audio_and_images(),
+            receive_user_input(),
             detect_speech_segments(),
             send_keepalive(),
             return_exceptions=True
