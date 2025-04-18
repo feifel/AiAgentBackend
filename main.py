@@ -641,18 +641,19 @@ async def handle_client(websocket):
                             # Send interrupt signal before starting new generation
                             logger.info("Sending interrupt signal for new speech detection")
                             interrupt_message = json.dumps({
-                                "sender": "ai",
-                                "mime_type": "application/interrupt",
-                                "data": True
+                                "type": "InterruptAudio",
+                                "timestamp": int(time.time() * 1000)
                             })
                             logger.info(f"Interrupt message: {interrupt_message}")
                             await websocket.send(interrupt_message)
                             
                             # send transcribed user message
                             await websocket.send(json.dumps({
-                                "sender": "user",
-                                "mime_type": "text/plain",
-                                "data": transcription
+                                "type": "Response",
+                                "timestamp": int(time.time() * 1000),
+                                "data": transcription,
+                                "mimeType": "text/plain",
+                                "context": "user"
                             }))
                             
                             # Set TTS playing flag and start new generation workflow
@@ -695,9 +696,10 @@ async def handle_client(websocket):
                                             
                                             # Send the initial audio to the client
                                             await websocket.send(json.dumps({
-                                                "sender": "ai",
-                                                "mime_type": "audio/pcm",
-                                                "data": base64_audio
+                                                "type": "AudioStream",
+                                                "timestamp": int(time.time() * 1000),
+                                                "data": base64_audio,
+                                                "mimeType": "audio/pcm"
                                             }))
                                             aiResponse = initial_text
                                             # Now start collecting remaining text in parallel
@@ -738,9 +740,10 @@ async def handle_client(websocket):
                                                             
                                                             # Send the remaining audio to the client
                                                             await websocket.send(json.dumps({
-                                                                "sender": "ai",
-                                                                "mime_type": "audio/pcm",
-                                                                "data": base64_audio
+                                                                "type": "AudioStream",
+                                                                "timestamp": int(time.time() * 1000),
+                                                                "data": base64_audio,
+                                                                "mimeType": "audio/pcm"
                                                             }))
                                                             
                                                             aiResponse = f"{initial_text} {remaining_text}"
@@ -752,9 +755,10 @@ async def handle_client(websocket):
                                                         continue
 
                                                 await websocket.send(json.dumps({
-                                                    "sender": "ai",
-                                                    "mime_type": "text/plain",
-                                                    "data": aiResponse
+                                                    "type": "Response",
+                                                    "timestamp": int(time.time() * 1000),
+                                                    "data": aiResponse,
+                                                    "context": "ai"
                                                 }))
                                             except asyncio.CancelledError:
                                                 # If text collection is cancelled, update history with what we have
@@ -810,14 +814,13 @@ async def handle_client(websocket):
                 try:
                     data = json.loads(message)
                                         
-                    if "mime_type" in data:
-                        # logger.info(f"receive_user_input: {data["mime_type"]}")
+                    if "type" in data:
                         # Handle audio data
-                        if data["mime_type"] == "audio/pcm":
+                        if data["type"] == "AudioStream":
                             audio_data = base64.b64decode(data["data"])
                             await detector.add_audio(audio_data)
                         # Only process image if TTS is not playing
-                        elif data["mime_type"] == "image/jpeg" and not detector.tts_playing:
+                        elif data["type"] == "ScreenShot" and not detector.tts_playing:
                             # Pass the image data through exactly as received
                             await gemma3_processor.set_image(data["data"])
                         
