@@ -55,15 +55,13 @@ This AI Agent Backend is the backend to my AI Agent Frontend. You can talk and s
 This project was heavily inspired by https://github.com/yeyu2/Youtube_demos/tree/main/Multimodal-server-gemma3
 
 ## Roadmap
-1. Support German:
-    - Replace Kokoro with gTTS to support TTS in German
-    - Use gemma3 from ollama (this supports German)
-        -> Unfortunately screensharing got broken with ollama
-        -> Check if gemma3 from Hugging faces also works
-2. Replace gTTS with OpenVoice since gTTS requires online connection
-3. Send also LLM Text besides Audio to updated ChatHistory
-4. Implement Talking Avatar using Wav2Lip
-5. Add MCP support for tooling
+1. Refactor WebSocketMessages to be ready for new usecase STT (Speach To Text) and attachment processing (e.g. PDF)
+1. Add support for Text-Chat and use https://ollama.readthedocs.io/en/api/#generate-a-chat-completion instead of https://ollama.readthedocs.io/en/api/#generate-a-completion
+    1. Maintain chat history messages
+2. Implement Talking Avatar using Wav2Lip
+3. Add MCP support for tooling
+4. Add MCP Server to create Shopping list
+5. Replace gTTS with OpenVoice since gTTS requires online connection
 
 ## Similar Projects
 1. https://github.com/HumanAIGC-Engineering/OpenAvatarChat
