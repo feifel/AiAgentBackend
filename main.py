@@ -655,135 +655,13 @@ async def handle_client(websocket):
                                 "mimeType": "text/plain",
                                 "context": "user"
                             }))
-                            
-                            # Set TTS playing flag and start new generation workflow
-                            await detector.set_tts_playing(True)
-                            
                             try:
-                                # Create generation task
-                                generation_task = asyncio.create_task(
-                                    gemma3_processor.generate_streaming(transcription, initial_chunks=3)
-                                )
-                                
-                                # Store the generation task
-                                await detector.set_current_tasks(generation_task=generation_task)
-                                
-                                # Wait for initial generation
-                                try:
-                                    streamer, initial_text = await generation_task
-                                except asyncio.CancelledError:
-                                    logger.info("Generation cancelled - new speech detected")
-                                    continue
-                                
-                                if initial_text:
-                                    # Create TTS task for initial speech
-                                    tts_task = asyncio.create_task(
-                                        tts_processor.synthesize_initial_speech(initial_text)
-                                    )
-                                    
-                                    # Store the TTS task
-                                    await detector.set_current_tasks(tts_task=tts_task)
-                                    
-                                    try:
-                                        # Wait for initial audio synthesis
-                                        initial_audio = await tts_task
-                                        
-                                        if initial_audio is not None:
-                                            # Convert to base64 and send to client
-                                            # Audio is already in [-1, 1] range from librosa
-                                            audio_bytes = (initial_audio * 32768).astype(np.int16).tobytes()
-                                            base64_audio = base64.b64encode(audio_bytes).decode('utf-8')
-                                            
-                                            # Send the initial audio to the client
-                                            await websocket.send(json.dumps({
-                                                "type": "AudioStream",
-                                                "timestamp": int(time.time() * 1000),
-                                                "data": base64_audio,
-                                                "mimeType": "audio/pcm"
-                                            }))
-                                            aiResponse = initial_text
-                                            # Now start collecting remaining text in parallel
-                                            remaining_text_task = asyncio.create_task(
-                                                collect_remaining_text(streamer, initial_text)
-                                            )
-                                            
-                                            # Store the remaining text task
-                                            await detector.set_current_tasks(generation_task=remaining_text_task)
-                                            
-                                            try:
-                                                # Wait for remaining text collection
-                                                remaining_text = await remaining_text_task
-                                                
-                                                # Update message history with complete response
-                                                gemma3_processor._update_history_with_complete_response(
-                                                    transcription, initial_text, remaining_text
-                                                )
-                                                
-                                                if remaining_text:
-                                                    # Create TTS task for remaining text
-                                                    remaining_tts_task = asyncio.create_task(
-                                                        tts_processor.synthesize_remaining_speech(remaining_text)
-                                                    )
-                                                    
-                                                    # Store the TTS task
-                                                    await detector.set_current_tasks(tts_task=remaining_tts_task)
-                                                    
-                                                    try:
-                                                        # Wait for remaining audio synthesis
-                                                        remaining_audio = await remaining_tts_task
-                                                        
-                                                        if remaining_audio is not None:
-                                                            # Convert to base64 and send to client
-                                                            # Audio is already in [-1, 1] range from librosa
-                                                            audio_bytes = (remaining_audio * 32768).astype(np.int16).tobytes()
-                                                            base64_audio = base64.b64encode(audio_bytes).decode('utf-8')
-                                                            
-                                                            # Send the remaining audio to the client
-                                                            await websocket.send(json.dumps({
-                                                                "type": "AudioStream",
-                                                                "timestamp": int(time.time() * 1000),
-                                                                "data": base64_audio,
-                                                                "mimeType": "audio/pcm"
-                                                            }))
-                                                            
-                                                            aiResponse = f"{initial_text} {remaining_text}"
-                                                            
-                                                    
-                                                    except asyncio.CancelledError:
-                                                        # Even if TTS is cancelled, keep the message history
-                                                        logger.info("Remaining TTS cancelled - new speech detected")
-                                                        continue
-
-                                                await websocket.send(json.dumps({
-                                                    "type": "Response",
-                                                    "timestamp": int(time.time() * 1000),
-                                                    "data": aiResponse,
-                                                    "context": "ai"
-                                                }))
-                                            except asyncio.CancelledError:
-                                                # If text collection is cancelled, update history with what we have
-                                                gemma3_processor._update_history_with_complete_response(
-                                                    transcription, initial_text
-                                                )
-                                                logger.info("Remaining text collection cancelled - new speech detected")
-                                                continue
-                                    
-                                    except asyncio.CancelledError:
-                                        # If initial TTS is cancelled, still update history
-                                        gemma3_processor._update_history_with_complete_response(
-                                            transcription, initial_text
-                                        )
-                                        logger.info("Initial TTS cancelled - new speech detected")
-                                        continue
-                            
+                                await produce_response(transcription)
+                            except asyncio.CancelledError:
+                                logger.info("Generation cancelled - new speech detected")
+                                continue
                             except websockets.exceptions.ConnectionClosed:
                                 break
-                            except Exception as e:
-                                logger.error(f"Error in speech processing: {e}")
-                            finally:
-                                # Clear TTS playing flag and tasks
-                                await detector.set_tts_playing(False)
-                                await detector.set_current_tasks()
                                 
                     await asyncio.sleep(0.01)
                 except websockets.exceptions.ConnectionClosed:
@@ -793,6 +671,123 @@ async def handle_client(websocket):
                     await detector.set_tts_playing(False)
                     await detector.set_current_tasks()
         
+        async def produce_response(requestText):            
+            # Set TTS playing flag and start new generation workflow
+            await detector.set_tts_playing(True)
+            
+            try:
+                # Create generation task
+                generation_task = asyncio.create_task(
+                    gemma3_processor.generate_streaming(requestText, initial_chunks=3)
+                )
+                
+                # Store the generation task
+                await detector.set_current_tasks(generation_task=generation_task)
+                
+                # Wait for initial generation
+                streamer, initial_text = await generation_task                
+                
+                if initial_text:
+                    # Create TTS task for initial speech
+                    tts_task = asyncio.create_task(
+                        tts_processor.synthesize_initial_speech(initial_text)
+                    )
+                    
+                    # Store the TTS task
+                    await detector.set_current_tasks(tts_task=tts_task)
+                    
+                    try:
+                        # Wait for initial audio synthesis
+                        initial_audio = await tts_task
+                        
+                        if initial_audio is not None:
+                            # Convert to base64 and send to client
+                            # Audio is already in [-1, 1] range from librosa
+                            audio_bytes = (initial_audio * 32768).astype(np.int16).tobytes()
+                            base64_audio = base64.b64encode(audio_bytes).decode('utf-8')
+                            
+                            # Send the initial audio to the client
+                            await websocket.send(json.dumps({
+                                "type": "AudioStream",
+                                "timestamp": int(time.time() * 1000),
+                                "data": base64_audio,
+                                "mimeType": "audio/pcm"
+                            }))
+                            aiResponse = initial_text
+                            # Now start collecting remaining text in parallel
+                            remaining_text_task = asyncio.create_task(
+                                collect_remaining_text(streamer, initial_text)
+                            )
+                            
+                            # Store the remaining text task
+                            await detector.set_current_tasks(generation_task=remaining_text_task)
+                            
+                            try:
+                                # Wait for remaining text collection
+                                remaining_text = await remaining_text_task
+                                
+                                # Update message history with complete response
+                                gemma3_processor._update_history_with_complete_response(
+                                    requestText, initial_text, remaining_text
+                                )
+                                
+                                if remaining_text:
+                                    # Create TTS task for remaining text
+                                    remaining_tts_task = asyncio.create_task(
+                                        tts_processor.synthesize_remaining_speech(remaining_text)
+                                    )
+                                    
+                                    # Store the TTS task
+                                    await detector.set_current_tasks(tts_task=remaining_tts_task)
+                                    
+                                    # Wait for remaining audio synthesis
+                                    remaining_audio = await remaining_tts_task
+                                    
+                                    if remaining_audio is not None:
+                                        # Convert to base64 and send to client
+                                        # Audio is already in [-1, 1] range from librosa
+                                        audio_bytes = (remaining_audio * 32768).astype(np.int16).tobytes()
+                                        base64_audio = base64.b64encode(audio_bytes).decode('utf-8')
+                                        
+                                        # Send the remaining audio to the client
+                                        await websocket.send(json.dumps({
+                                            "type": "AudioStream",
+                                            "timestamp": int(time.time() * 1000),
+                                            "data": base64_audio,
+                                            "mimeType": "audio/pcm"
+                                        }))
+                                        
+                                        aiResponse = f"{initial_text} {remaining_text}"
+
+                                await websocket.send(json.dumps({
+                                    "type": "Response",
+                                    "timestamp": int(time.time() * 1000),
+                                    "data": aiResponse,
+                                    "context": "ai"
+                                }))
+                            except asyncio.CancelledError:
+                                # If text collection is cancelled, update history with what we have
+                                gemma3_processor._update_history_with_complete_response(
+                                    requestText, initial_text
+                                )
+                                logger.info("Remaining text collection cancelled - new speech detected")
+                                raise 
+                    
+                    except asyncio.CancelledError:
+                        # If initial TTS is cancelled, still update history
+                        gemma3_processor._update_history_with_complete_response(
+                            requestText, initial_text
+                        )
+                        logger.info("Initial TTS cancelled - new speech detected")
+                        raise
+            except Exception as e:
+                logger.error(f"Error in speech processing: {e}")
+            finally:
+                # Clear TTS playing flag and tasks
+                await detector.set_tts_playing(False)
+                await detector.set_current_tasks()
+
+
         async def collect_remaining_text(streamer, initial_text):
             """Collect remaining text from the streamer"""
             collected_text = ""
@@ -823,6 +818,10 @@ async def handle_client(websocket):
                         elif data["type"] == "ScreenShot" and not detector.tts_playing:
                             # Pass the image data through exactly as received
                             await gemma3_processor.set_image(data["data"])
+                        # Only process image if TTS is not playing
+                        elif data["type"] == "Request" and not detector.tts_playing:
+                            # Pass the image data through exactly as received
+                            await produce_response(data["data"])
                         
                 except Exception as e:
                     logger.error(f"Error receiving data: {e}")
