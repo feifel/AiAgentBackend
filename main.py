@@ -585,8 +585,9 @@ async def handle_client(websocket):
     detector = None  # Initialize to None to avoid UnboundLocalError
     try:
         # Receive initial configuration
-        await websocket.recv()
-        logger.info("Client connected")
+        config = await websocket.recv()
+        logger.info(f"Client connected: {config}")
+        # TODO: Handle configuration message
         
         # Initialize speech detection and get instance of processors
         detector = AudioSegmentDetector()
@@ -787,7 +788,6 @@ async def handle_client(websocket):
                 await detector.set_tts_playing(False)
                 await detector.set_current_tasks()
 
-
         async def collect_remaining_text(streamer, initial_text):
             """Collect remaining text from the streamer"""
             collected_text = ""
@@ -810,6 +810,7 @@ async def handle_client(websocket):
                     data = json.loads(message)
                                         
                     if "type" in data:
+                        logger.info(f"Received {data['type']} message via WebSocket")
                         # Handle audio data
                         if data["type"] == "AudioStream":
                             audio_data = base64.b64decode(data["data"])
@@ -822,7 +823,7 @@ async def handle_client(websocket):
                         elif data["type"] == "Request" and not detector.tts_playing:
                             # Pass the image data through exactly as received
                             await produce_response(data["data"])
-                        
+                        # Todo handle configuration messages
                 except Exception as e:
                     logger.error(f"Error receiving data: {e}")
                     if 'data' in locals():

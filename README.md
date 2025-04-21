@@ -55,12 +55,15 @@ This AI Agent Backend is the backend to my AI Agent Frontend. You can talk and s
 This project was heavily inspired by https://github.com/yeyu2/Youtube_demos/tree/main/Multimodal-server-gemma3
 
 ## Roadmap
-1. Refactor WebSocketMessages to be ready for new usecase STT (Speach To Text) and attachment processing (e.g. PDF)
-1. Add support for Text-Chat and use https://ollama.readthedocs.io/en/api/#generate-a-chat-completion instead of https://ollama.readthedocs.io/en/api/#generate-a-completion
+1. Use Configuration provide by Configuration messages (see line 590 and 826)
+1. Use https://ollama.readthedocs.io/en/api/#generate-a-chat-completion instead of https://ollama.readthedocs.io/en/api/#generate-a-completion
     1. Maintain chat history messages
-2. Implement Talking Avatar using Wav2Lip
-3. Add MCP support for tooling
-4. Add MCP Server to create Shopping list
+2. Implement visualization of an Avatar with Lipsync by using https://github.com/Rudrabha/Wav2Lip
+3. Add support to select different tools retrieved from an MCP server
+    1. Implement MCP server: 
+        1. Implement Mem0: https://www.youtube.com/watch?v=lbyPJqCI-tw
+        2. Implement LightRAG: https://www.youtube.com/watch?v=Fx3J8k--U3E
+    2. Integrate n8n (via MCP server): https://www.youtube.com/watch?v=WcIRVk8kyJk
 5. Replace gTTS with OpenVoice since gTTS requires online connection
 
 ## Similar Projects
