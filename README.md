@@ -64,7 +64,7 @@ This project was heavily inspired by https://github.com/yeyu2/Youtube_demos/tree
         1. Implement Mem0: https://www.youtube.com/watch?v=lbyPJqCI-tw
         2. Implement LightRAG: https://www.youtube.com/watch?v=Fx3J8k--U3E
     2. Integrate n8n (via MCP server): https://www.youtube.com/watch?v=WcIRVk8kyJk
-5. Replace gTTS with OpenVoice since gTTS requires online connection
+5. Replace gTTS with OpenVoice or F5-TTS (available also via pinokio) since gTTS requires online connection
 
 ## Similar Projects
 1. https://github.com/HumanAIGC-Engineering/OpenAvatarChat
