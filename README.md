@@ -58,13 +58,14 @@ This project was heavily inspired by https://github.com/yeyu2/Youtube_demos/tree
 1. Use Configuration provide by Configuration messages (see line 590 and 826)
 1. Use https://ollama.readthedocs.io/en/api/#generate-a-chat-completion instead of https://ollama.readthedocs.io/en/api/#generate-a-completion
     1. Maintain chat history messages
-2. Implement visualization of an Avatar with Lipsync by using https://github.com/Rudrabha/Wav2Lip
+2. Implement visualization of an Avatar with Lipsync by using https://github.com/Rudrabha/Wav2Lip or better https://github.com/antgroup/ditto-talkinghead
 3. Add support to select different tools retrieved from an MCP server
     1. Implement MCP server: 
         1. Implement Mem0: https://www.youtube.com/watch?v=lbyPJqCI-tw
         2. Implement LightRAG: https://www.youtube.com/watch?v=Fx3J8k--U3E
     2. Integrate n8n (via MCP server): https://www.youtube.com/watch?v=WcIRVk8kyJk
-5. Replace gTTS with OpenVoice or F5-TTS (available also via pinokio) since gTTS requires online connection
+5. Replace gTTS with kani-tts, which runs locally with 2 GByte VRAM, supports German and streaming
+   -> See docker setup here: https://github.com/feifel/kani-tts 
 
 ## Similar Projects
 1. https://github.com/HumanAIGC-Engineering/OpenAvatarChat
