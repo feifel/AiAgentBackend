@@ -22,31 +22,36 @@ This AI Agent Backend is the backend to my AI Agent Frontend. You can talk and s
     cd AiAgentBackend
     ```    
 3. Run the following command to create a virtual environment:     
-    ```powershell
-    python -m venv venv
+    ```bash
+    python3 -m venv venv
     ```    
 4. Activate the virtual environment:    
-    ```csharp
-    venv\Scripts\Activate.ps1
+    ```bash
+    source ./venv/bin/activate
     ```    
 5. Install the dependencies:     
-    ```powershell
+    ```bash
     pip install -r requirements.txt
     ```    
 6. Install Gemma3 model in Ollama:
-    ```powershell
+    ```bash
     ollama pull gemma3
     ```
+    If you havn't Ollama installed yet, you can install it by running this as normal user:
+    ```bash
+    curl -fsSL https://ollama.com/install.sh | sh
+    sudo systemctl enable --now ollama
+    ```
 7. Start the backend:     
-    ```powershell
-    python main.py
+    ```bash
+    python3 main.py
     ```    
     The first time when you run this it will download the remaining models:    
     - openai--whisper-large-v3-turbo: 1.51 GByte
     - hexgrad--Kokoro-82M: 0.31 GByte
     
     It should show the port of the WebSocket that it is listening:         
-    ```powershell
+    ```bash
     2025-04-11 14:07:01,348 - INFO - WebSocket server running on 0.0.0.0:9073
     ```        
     → You will need to configure this port on the AiAgentFrontend project (App.svelte).
