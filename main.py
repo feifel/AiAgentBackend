@@ -12,9 +12,7 @@ from PIL import Image
 import time
 import os
 from datetime import datetime
-from gtts import gTTS
 import re
-import librosa
 import httpx
 
 # Configure logging
@@ -29,7 +27,7 @@ class AudioSegmentDetector:
     """Detects speech segments based on audio energy levels"""
     
     def __init__(self, 
-                 sample_rate=24000,  # Changed from 16000 to 24000
+                 sample_rate=22050,  # Changed from 16000 to 24000
                  energy_threshold=0.015,
                  silence_duration=0.8,
                  min_speech_duration=0.8,
@@ -431,8 +429,8 @@ Wenn sich die Frage auf ein Bild bezieht, beschreibe bitte genau was du im Bild 
         
         logger.info(f"Updated message history with complete response ({len(complete_response)} chars)")
 
-class GoogleTTSProcessor:
-    """Handles text-to-speech conversion using Google TTS (gTTS)"""
+class KaniTTSProcessor:
+    """Handles text-to-speech conversion using Kani-TTS streaming API"""
     _instance = None
     
     @classmethod
@@ -442,98 +440,118 @@ class GoogleTTSProcessor:
         return cls._instance
     
     def __init__(self):
-        logger.info("Initializing Google TTS processor...")
+        logger.info("Initializing Kani-TTS processor...")
         self.synthesis_count = 0
-        self.target_sr = 24000  # Target sample rate for better quality
-        logger.info("Google TTS processor initialized successfully")
+        self.target_sr = 22050
+        self.kani_api = "http://localhost:8000/stream-tts"
+        self.max_chunk_chars = 500
+        logger.info("Kani-TTS processor initialized successfully")
     
-    def _mp3_to_wav(self, mp3_data):
-        """Convert MP3 data to WAV numpy array using librosa"""
+    def _split_text_into_chunks(self, text):
+        """Split text into chunks of max 500 characters at sentence boundaries"""
+        chunks = []
+        sentences = re.split(r'([.!?]+\s*)', text)
+        current_chunk = ""
+        
+        for i in range(0, len(sentences), 2):
+            sentence = sentences[i]
+            punctuation = sentences[i+1] if i+1 < len(sentences) else ""
+            full_sentence = sentence + punctuation
+            
+            if len(current_chunk) + len(full_sentence) <= self.max_chunk_chars:
+                current_chunk += full_sentence
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                current_chunk = full_sentence
+        
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+        
+        return chunks
+    
+    async def _stream_audio_from_kani(self, text):
+        """Stream audio from Kani-TTS API"""
         try:
-            # Load MP3 data using librosa with original sample rate
-            y, sr = librosa.load(io.BytesIO(mp3_data), sr=None)  # Use None to keep original sample rate
+            payload = {
+                "text": text,
+                "temperature": 0.6,
+                "max_tokens": 1200,
+                "top_p": 0.95,
+                "chunk_size": 25,
+                "lookback_frames": 15
+            }
             
-            # Resample to target sample rate if needed
-            if sr != self.target_sr:
-                y = librosa.resample(y, orig_sr=sr, target_sr=self.target_sr)
-            
-            # Audio is already normalized by librosa to [-1, 1], just return it
-            return y
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                async with client.stream('POST', self.kani_api, json=payload) as response:
+                    if response.status_code != 200:
+                        logger.error(f"Kani-TTS API error: {response.status_code}")
+                        return None
+                    
+                    audio_chunks = []
+                    async for chunk in response.aiter_bytes():
+                        if chunk:
+                            audio_chunks.append(chunk)
+                    
+                    if audio_chunks:
+                        audio_bytes = b''.join(audio_chunks)
+                        audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+                        return audio_array
+                    
+            return None
             
         except Exception as e:
-            logger.error(f"Error converting MP3 to WAV: {e}")
-            return None
-
-    def _generate_audio(self, text, lang='de'):
-        """Generate audio using Google TTS"""
-        try:
-            # Create an in-memory bytes buffer
-            mp3_fp = io.BytesIO()
-            
-            # Generate MP3 audio
-            tts = gTTS(text=text, lang=lang, slow=False)
-            tts.write_to_fp(mp3_fp)
-            mp3_fp.seek(0)
-            
-            # Convert MP3 to numpy array
-            audio_data = self._mp3_to_wav(mp3_fp.getvalue())
-            
-            if audio_data is not None:
-                return audio_data
-            return None
-                
-        except Exception as e:
-            logger.error(f"Audio generation error: {e}")
+            logger.error(f"Kani-TTS streaming error: {e}")
             return None
 
     async def synthesize_initial_speech(self, text):
-        """Convert initial text to speech using Google TTS"""
+        """Convert initial text to speech using Kani-TTS"""
         if not text:
             return None
         
         try:
             logger.info(f"Synthesizing initial speech for text: '{text}'")
             
-            # Run TTS in a thread pool to avoid blocking
-            audio = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self._generate_audio(text, 'de')
-            )
+            chunks = self._split_text_into_chunks(text)
+            if not chunks:
+                return None
             
-            if audio is not None:
+            audio_segments = []
+            
+            for chunk in chunks:
+                if chunk.strip():
+                    audio = await self._stream_audio_from_kani(chunk)
+                    if audio is not None:
+                        audio_segments.append(audio)
+            
+            if audio_segments:
+                combined_audio = np.concatenate(audio_segments)
                 self.synthesis_count += 1
-                logger.info(f"Initial speech synthesis complete: {len(audio)} samples")
-                return audio
+                logger.info(f"Initial speech synthesis complete: {len(combined_audio)} samples")
+                return combined_audio
             return None
             
         except Exception as e:
             logger.error(f"Initial speech synthesis error: {e}")
             return None
-    
+                
     async def synthesize_remaining_speech(self, text):
-        """Convert remaining text to speech using Google TTS"""
+        """Convert remaining text to speech using Kani-TTS"""
         if not text:
             return None
         
         try:
             logger.info(f"Synthesizing remaining speech for text: '{text[:50]}...' if len(text) > 50 else text")
             
-            # Split text into sentences for better processing
-            sentences = re.split(r'([.!?]+)', text)
+            chunks = self._split_text_into_chunks(text)
             audio_segments = []
             
-            for i in range(0, len(sentences)-1, 2):
-                sentence = sentences[i].strip() + (sentences[i+1] if i+1 < len(sentences) else "")
-                if sentence.strip():
-                    # Generate audio for each sentence
-                    audio = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: self._generate_audio(sentence, 'de')
-                    )
+            for chunk in chunks:
+                if chunk.strip():
+                    audio = await self._stream_audio_from_kani(chunk)
                     if audio is not None:
                         audio_segments.append(audio)
             
-            # Combine all audio segments
             if audio_segments:
                 combined_audio = np.concatenate(audio_segments)
                 self.synthesis_count += 1
@@ -546,29 +564,22 @@ class GoogleTTSProcessor:
             return None
     
     async def synthesize_speech(self, text):
-        """Convert text to speech using Google TTS (legacy method)"""
+        """Convert text to speech using Kani-TTS (legacy method)"""
         if not text:
             return None
         
         try:
             logger.info(f"Synthesizing speech for text: '{text[:50]}...' if len(text) > 50 else text")
             
-            # Split text into sentences for better processing
-            sentences = re.split(r'([.!?]+)', text)
+            chunks = self._split_text_into_chunks(text)
             audio_segments = []
             
-            for i in range(0, len(sentences)-1, 2):
-                sentence = sentences[i].strip() + (sentences[i+1] if i+1 < len(sentences) else "")
-                if sentence.strip():
-                    # Generate audio for each sentence
-                    audio = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: self._generate_audio(sentence, 'de')
-                    )
+            for chunk in chunks:
+                if chunk.strip():
+                    audio = await self._stream_audio_from_kani(chunk)
                     if audio is not None:
                         audio_segments.append(audio)
             
-            # Combine all audio segments
             if audio_segments:
                 combined_audio = np.concatenate(audio_segments)
                 self.synthesis_count += 1
@@ -593,7 +604,7 @@ async def handle_client(websocket):
         detector = AudioSegmentDetector()
         transcriber = WhisperTranscriber.get_instance()
         gemma3_processor = Gemma3Processor.get_instance()  # Updated to use Gemma3
-        tts_processor = GoogleTTSProcessor.get_instance()  # Updated to use Google TTS
+        tts_processor = KaniTTSProcessor.get_instance()    # Updated to use Kani-TTS
         
         # Add keepalive task
         async def send_keepalive():
@@ -855,7 +866,7 @@ async def main():
         # Initialize all processors ahead of time to load models
         transcriber = WhisperTranscriber.get_instance()
         gemma3_processor = Gemma3Processor.get_instance()  # Updated to use Gemma3
-        tts_processor = GoogleTTSProcessor.get_instance()
+        tts_processor = KaniTTSProcessor.get_instance()    # Updated to use Kani-TTS
         
         logger.info("Starting WebSocket server on 0.0.0.0:9073")
         # Add ping_interval and ping_timeout parameters

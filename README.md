@@ -42,7 +42,21 @@ This AI Agent Backend is the backend to my AI Agent Frontend. You can talk and s
     curl -fsSL https://ollama.com/install.sh | sh
     sudo systemctl enable --now ollama
     ```
-7. Start the backend:     
+7. Install kani-tts:
+    ```bash
+    cd /home/roman/Projects
+    git clone https://github.com/feifel/kani-tts.git
+    cd kani-tts
+    docker build -t kani-tts .
+    docker run --gpus all -p 8000:8000 \
+    -v $(pwd)/models:/app/models \
+    -v $(pwd)/cache:/app/cache \
+    -v $(pwd)/output:/app/output \
+    kani-tts
+    ```
+    Read this for more details:
+    https://github.com/feifel/kani-tts/blob/main/DOCKER.md
+8. Start the backend:     
     ```bash
     python3 main.py
     ```    
