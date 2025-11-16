@@ -22,31 +22,36 @@ This AI Agent Backend is the backend to my AI Agent Frontend. You can talk and s
     cd AiAgentBackend
     ```    
 3. Run the following command to create a virtual environment:     
-    ```powershell
-    python -m venv venv
+    ```bash
+    python3 -m venv venv
     ```    
 4. Activate the virtual environment:    
-    ```csharp
-    venv\Scripts\Activate.ps1
+    ```bash
+    source ./venv/bin/activate
     ```    
 5. Install the dependencies:     
-    ```powershell
+    ```bash
     pip install -r requirements.txt
     ```    
 6. Install Gemma3 model in Ollama:
-    ```powershell
+    ```bash
     ollama pull gemma3
     ```
+    If you havn't Ollama installed yet, you can install it by running this as normal user:
+    ```bash
+    curl -fsSL https://ollama.com/install.sh | sh
+    sudo systemctl enable --now ollama
+    ```
 7. Start the backend:     
-    ```powershell
-    python main.py
+    ```bash
+    python3 main.py
     ```    
     The first time when you run this it will download the remaining models:    
     - openai--whisper-large-v3-turbo: 1.51 GByte
     - hexgrad--Kokoro-82M: 0.31 GByte
     
     It should show the port of the WebSocket that it is listening:         
-    ```powershell
+    ```bash
     2025-04-11 14:07:01,348 - INFO - WebSocket server running on 0.0.0.0:9073
     ```        
     → You will need to configure this port on the AiAgentFrontend project (App.svelte).
@@ -55,15 +60,17 @@ This AI Agent Backend is the backend to my AI Agent Frontend. You can talk and s
 This project was heavily inspired by https://github.com/yeyu2/Youtube_demos/tree/main/Multimodal-server-gemma3
 
 ## Roadmap
-1. Support German:
-    - Replace Kokoro with gTTS to support TTS in German
-    - Use gemma3 from ollama (this supports German)
-        -> Unfortunately screensharing got broken with ollama
-        -> Check if gemma3 from Hugging faces also works
-2. Replace gTTS with OpenVoice since gTTS requires online connection
-3. Send also LLM Text besides Audio to updated ChatHistory
-4. Implement Talking Avatar using Wav2Lip
-5. Add MCP support for tooling
+1. Use Configuration provide by Configuration messages (see line 590 and 826)
+1. Use https://ollama.readthedocs.io/en/api/#generate-a-chat-completion instead of https://ollama.readthedocs.io/en/api/#generate-a-completion
+    1. Maintain chat history messages
+2. Implement visualization of an Avatar with Lipsync by using https://github.com/Rudrabha/Wav2Lip or better https://github.com/antgroup/ditto-talkinghead
+3. Add support to select different tools retrieved from an MCP server
+    1. Implement MCP server: 
+        1. Implement Mem0: https://www.youtube.com/watch?v=lbyPJqCI-tw
+        2. Implement LightRAG: https://www.youtube.com/watch?v=Fx3J8k--U3E
+    2. Integrate n8n (via MCP server): https://www.youtube.com/watch?v=WcIRVk8kyJk
+5. Replace gTTS with kani-tts, which runs locally with 2 GByte VRAM, supports German and streaming
+   -> See docker setup here: https://github.com/feifel/kani-tts 
 
 ## Similar Projects
 1. https://github.com/HumanAIGC-Engineering/OpenAvatarChat
